@@ -1,16 +1,3 @@
-# ==============================================================================
-# TIJERAL PARAMÉTRICO  (pegar en app.py, después de obtener_largo_comercial_por_tipo)
-# ==============================================================================
-# Convención (igual a tu plano CAD):
-#   x = 0 (eje 1, Peralte A)  ->  x = L (eje 2, Peralte B)
-#   Nivel 0 = base del Peralte B (línea roja de referencia)
-#   C = altura donde INICIA el Peralte A (brida inferior izquierda). Brida inferior: (0, C) -> (L, 0)
-#   A = altura del Peralte A  -> brida superior izquierda en y = C + A
-#   B = altura del Peralte B  -> brida superior derecha  en y = B
-#   Altura libre entre bridas a lo largo de x:  h(x) = A + (B - A) * x / L
-#   Si C = 0 y A = B  ->  bridas horizontales (sin pendiente).
-#   Aumentar C aumenta la pendiente.
-#   Montante diagonal A = "\" (arriba-izq -> abajo-der)   Montante diagonal B = "/" (abajo-izq -> arriba-der)
 import math
 from collections import OrderedDict
 
@@ -311,32 +298,3 @@ def renderizar_paso3_tijeral_parametrico():
         if geo["diagonales"]:
             st.dataframe(pd.DataFrame([{"ID": d["id"], "Tramo": d["panel"], "Tipo": d["tipo"], "Longitud (m)": round(d["largo"], 3)}
                                        for d in geo["diagonales"]]), hide_index=True, use_container_width=True)
-
-
-# ==============================================================================
-# CAMBIOS EN app.py
-# ==============================================================================
-# (a) En st.session_state.config agrega nada: init_tijeral_state() usa setdefault.
-#     Borra el bloque  "if 'lista_montantes' not in st.session_state: ..."  y "next_montante_id".
-#
-# (b) PASO 3: reemplaza TODO el contenido de  `elif st.session_state.paso == 3:`  por:
-#
-#     elif st.session_state.paso == 3:
-#         st.subheader("3️⃣ Tijeral Paramétrico (Peraltes A/B, Cota C, Montantes y Diagonales)")
-#         renderizar_paso3_tijeral_parametrico()
-#         st.write("")
-#         col_ant, col_esp, col_sig = st.columns([1, 2.5, 1.5])
-#         with col_ant:
-#             if st.button("⬅️ Anterior", use_container_width=True):
-#                 ir_a_paso(2); st.rerun()
-#         with col_sig:
-#             if st.button("Siguiente: Panorama Completo 📊", type="primary", use_container_width=True):
-#                 ir_a_paso(4); st.rerun()
-#
-# (c) PASO 4: cambia el bucle  for clave in ["vigas_portico","correas","brida_sup","brida_inf"]
-#     por                       for clave in ["vigas_portico","correas"]
-#     y reemplaza el bucle  `for m_it in st.session_state.lista_montantes: ...`  por:
-#
-#         lista_items_activos.extend(obtener_partidas_tijeral_parametrico())
-#
-# (d) En el Paso 2 ya no debes mostrar las bridas (solo se editan en el Paso 3).
