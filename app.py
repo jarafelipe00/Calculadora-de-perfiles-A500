@@ -327,7 +327,155 @@ LISTAS_POR_TIPO = {
 }
 
 
-# 3. Inicialización de Estado (Session State)
+# 3. Funciones auxiliares para la Grilla y Croquis de Columnas Individuales ("VISTA SUPERIOR")
+def obtener_letras_ejes(n_letras, invertir=True):
+    letras = [chr(65 + i) for i in range(max(1, min(26, int(n_letras))))]
+    return list(reversed(letras)) if invertir else letras
+
+
+def obtener_numeros_ejes(n_filas):
+    # De arriba hacia abajo: ej. [2, 1] como en el plano CAD adjunto
+    return list(range(max(1, int(n_filas)), 0, -1))
+
+
+def sincronizar_nodos_croquis():
+    cfg = st.session_state.config
+    letras = obtener_letras_ejes(cfg["grid_num_ejes_letras"], cfg["grid_invertir_letras"])
+    numeros = obtener_numeros_ejes(cfg["grid_num_ejes_numeros"])
+    nodos_actuales = st.session_state.get("nodos_columnas", {})
+    nuevos_nodos = {}
+
+    for num in numeros:
+        for letra in letras:
+            coord = f"{letra}-{num}"
+            if coord in nodos_actuales:
+                nuevos_nodos[coord] = nodos_actuales[coord]
+            else:
+                # Por defecto: Fila superior (ej. Eje 2) Tubo Rectangular 5.20m; Fila inferior (ej. Eje 1) Viga H WF 4.00m
+                if num == max(numeros) and len(numeros) > 1:
+                    nuevos_nodos[coord] = {
+                        "activo": True,
+                        "tipo": "Tubo Rectangular",
+                        "perfil": "50 x 100 | 2.5 mm",
+                        "altura_m": 5.20
+                    }
+                else:
+                    nuevos_nodos[coord] = {
+                        "activo": True,
+                        "tipo": "Viga H (WF)",
+                        "perfil": 'WF 8" x 24 lb/pie',
+                        "altura_m": 4.00
+                    }
+    st.session_state.nodos_columnas = nuevos_nodos
+    return letras, numeros
+
+
+def generar_svg_croquis_columnas(letras_ejes, numeros_ejes, mapa_nodos, ancho_portico_m):
+    """
+    Dibuja un croquis técnico SVG estilo AutoCAD ("VISTA SUPERIOR") con ejes alfabéticos
+    superiores, ejes numéricos laterales, placas base y sección transversal real (I, [], O).
+    """
+    n_cols = len(letras_ejes)
+    n_rows = len(numeros_ejes)
+
+    dx = max(118, min(155, int(980 / max(1, n_cols))))
+    dy = 165 if n_rows <= 2 else 135
+    margin_left = 90
+    margin_right = 55
+    margin_top = 80
+    margin_bottom = 75
+
+    width = margin_left + max(0, n_cols - 1) * dx + margin_right + 40
+    height = margin_top + max(0, n_rows - 1) * dy + margin_bottom + 35
+
+    svg = [
+        '<div style="overflow-x:auto; background:#ffffff; border:1px solid #d0d7de; border-radius:8px; padding:12px;">',
+        f'<svg viewBox="0 0 {width} {height}" width="100%" style="min-width:{min(width, 760)}px; max-height:580px; font-family: monospace, sans-serif;">',
+        f'<rect x="0" y="0" width="{width}" height="{height}" fill="#ffffff"/>'
+    ]
+
+    # Líneas verticales de ejes (Letras)
+    for i, letra in enumerate(letras_ejes):
+        x = margin_left + i * dx
+        y_circle = 30
+        y_start = 46
+        y_end = height - 45
+        svg.append(f'<line x1="{x}" y1="{y_start}" x2="{x}" y2="{y_end}" stroke="#6e7781" stroke-width="1.2" stroke-dasharray="12,4,2,4"/>')
+        svg.append(f'<circle cx="{x}" cy="{y_circle}" r="15" fill="#ffffff" stroke="#1f2328" stroke-width="1.5"/>')
+        svg.append(f'<text x="{x}" y="{y_circle+5}" text-anchor="middle" font-size="14" font-weight="bold" fill="#1f2328">{letra}</text>')
+
+    # Líneas horizontales de ejes (Números)
+    for j, num in enumerate(numeros_ejes):
+        y = margin_top + j * dy
+        x_circle = 30
+        x_start = 46
+        x_end = width - 25
+        svg.append(f'<line x1="{x_start}" y1="{y}" x2="{x_end}" y2="{y}" stroke="#6e7781" stroke-width="1.2" stroke-dasharray="12,4,2,4"/>')
+        svg.append(f'<circle cx="{x_circle}" cy="{y}" r="15" fill="#ffffff" stroke="#1f2328" stroke-width="1.5"/>')
+        svg.append(f'<text x="{x_circle}" y="{y+5}" text-anchor="middle" font-size="14" font-weight="bold" fill="#1f2328">{num}</text>')
+
+    # Nodos de columna en cada intersección
+    for j, num in enumerate(numeros_ejes):
+        y = margin_top + j * dy
+        for i, letra in enumerate(letras_ejes):
+            x = margin_left + i * dx
+            coord = f"{letra}-{num}"
+            nodo = mapa_nodos.get(coord, {"activo": False})
+
+            if not nodo.get("activo", False):
+                svg.append(f'<circle cx="{x}" cy="{y}" r="4.5" fill="#eaeef2" stroke="#8c959f" stroke-width="1"/>')
+                svg.append(f'<text x="{x}" y="{y+22}" text-anchor="middle" font-size="10" fill="#8c959f">{coord} (Sin col.)</text>')
+                continue
+
+            tipo = nodo["tipo"]
+            partes_p = nodo["perfil"].split("|")
+            perfil_corto = partes_p[0].strip()
+            espesor_corto = partes_p[1].strip() if len(partes_p) > 1 else ""
+            altura = nodo["altura_m"]
+
+            if tipo == "Viga H (WF)":
+                color_borde = "#0969da"
+                color_fondo = "#ddf4ff"
+            elif tipo == "Tubo Rectangular":
+                color_borde = "#1a7f37"
+                color_fondo = "#dafbe1"
+            elif tipo == "Tubo Cuadrado":
+                color_borde = "#8250df"
+                color_fondo = "#fbefff"
+            else:
+                color_borde = "#bc4c00"
+                color_fondo = "#fff1e5"
+
+            # Placa base exterior cuadrada
+            svg.append(f'<rect x="{x-15}" y="{y-15}" width="30" height="30" fill="#ffffff" stroke="#1f2328" stroke-width="1.5"/>')
+
+            # Símbolo interno según geometría del perfil (como en el plano VISTA SUPERIOR)
+            if tipo == "Viga H (WF)":
+                svg.append(f'<line x1="{x-8}" y1="{y-9}" x2="{x+8}" y2="{y-9}" stroke="{color_borde}" stroke-width="2.6"/>')
+                svg.append(f'<line x1="{x-8}" y1="{y+9}" x2="{x+8}" y2="{y+9}" stroke="{color_borde}" stroke-width="2.6"/>')
+                svg.append(f'<line x1="{x}" y1="{y-9}" x2="{x}" y2="{y+9}" stroke="{color_borde}" stroke-width="2.4"/>')
+            elif tipo == "Tubo Rectangular":
+                svg.append(f'<rect x="{x-5.5}" y="{y-9.5}" width="11" height="19" fill="{color_fondo}" stroke="{color_borde}" stroke-width="2.0"/>')
+            elif tipo == "Tubo Cuadrado":
+                svg.append(f'<rect x="{x-8}" y="{y-8}" width="16" height="16" fill="{color_fondo}" stroke="{color_borde}" stroke-width="2.0"/>')
+            else:
+                svg.append(f'<circle cx="{x}" cy="{y}" r="8.5" fill="{color_fondo}" stroke="{color_borde}" stroke-width="2.0"/>')
+
+            # Etiqueta técnica debajo del nodo
+            svg.append(f'<rect x="{x-48}" y="{y+18}" width="96" height="36" rx="4" fill="{color_fondo}" stroke="{color_borde}" stroke-width="1"/>')
+            svg.append(f'<text x="{x}" y="{y+30}" text-anchor="middle" font-size="10.5" font-weight="bold" fill="#1f2328">{coord} | H={altura:.2f}m</text>')
+            texto_p = f"{perfil_corto} ({espesor_corto})" if espesor_corto else perfil_corto
+            svg.append(f'<text x="{x}" y="{y+43}" text-anchor="middle" font-size="9.2" fill="{color_borde}">{texto_p[:19]}</text>')
+
+    svg.append(
+        f'<text x="{width/2}" y="{height-12}" text-anchor="middle" font-size="13.5" font-weight="bold" fill="#1f2328" text-decoration="underline">'
+        f'VISTA SUPERIOR — CROQUIS DE UBICACIÓN Y ALTURA DE COLUMNAS (LUZ = {ancho_portico_m:.2f} m)</text>'
+    )
+    svg.append('</svg></div>')
+    return "\n".join(svg)
+
+
+# 4. Inicialización de Estado (Session State)
 if "paso" not in st.session_state:
     st.session_state.paso = 1
 
@@ -340,26 +488,29 @@ if "config" not in st.session_state:
         "modo_largo_sch": "6.00 m (SRL Comercial Estándar)",
         "largo_sch_m": 6.00,
         "ancho_corte_mm": 0.0,
-        "num_tijerales": 4,
-        "columnas_con_desnivel": True,
+        "num_tijerales": 8,
+        "modo_columnas": "individual_croquis",  # 'niveladas', 'desnivel_lados', 'individual_croquis'
         "mismo_perfil_columnas_desnivel": True,
         "ancho_portico_m": 10.00,
-        "optimizar_sobrantes_mismo_perfil": True
+        "optimizar_sobrantes_mismo_perfil": True,
+        "grid_num_ejes_letras": 8,
+        "grid_num_ejes_numeros": 2,
+        "grid_invertir_letras": True
     }
 
 if "partidas" not in st.session_state:
     st.session_state.partidas = {
         "columnas_unico": {
             "activo": False, "nombre": "Columnas Principales (Niveladas)", "es_tijeral": False,
-            "tipo": "Viga H (WF)", "perfil": 'WF 8" x 24 lb/pie', "cantidad": 8, "longitud_m": 4.50
+            "tipo": "Viga H (WF)", "perfil": 'WF 8" x 24 lb/pie', "cantidad": 16, "longitud_m": 4.50
         },
         "columnas_mayor": {
-            "activo": True, "nombre": "Columnas - Lado Mayor (Altura Mayor)", "es_tijeral": False,
-            "tipo": "Viga H (WF)", "perfil": 'WF 8" x 24 lb/pie', "cantidad": 4, "longitud_m": 5.20
+            "activo": False, "nombre": "Columnas - Lado Mayor (Altura Mayor)", "es_tijeral": False,
+            "tipo": "Tubo Rectangular", "perfil": "50 x 100 | 2.5 mm", "cantidad": 8, "longitud_m": 5.20
         },
         "columnas_menor": {
-            "activo": True, "nombre": "Columnas - Lado Menor (Altura Menor)", "es_tijeral": False,
-            "tipo": "Viga H (WF)", "perfil": 'WF 8" x 24 lb/pie', "cantidad": 4, "longitud_m": 4.00
+            "activo": False, "nombre": "Columnas - Lado Menor (Altura Menor)", "es_tijeral": False,
+            "tipo": "Viga H (WF)", "perfil": 'WF 8" x 24 lb/pie', "cantidad": 8, "longitud_m": 4.00
         },
         "vigas_portico": {
             "activo": False, "nombre": "Vigas Principales / Soleras", "es_tijeral": False,
@@ -379,7 +530,9 @@ if "partidas" not in st.session_state:
         },
     }
 
-# Lista dinámica de Montantes / Diagonales para permitir múltiples alturas específicas
+if "nodos_columnas" not in st.session_state:
+    sincronizar_nodos_croquis()
+
 if "lista_montantes" not in st.session_state:
     st.session_state.lista_montantes = [
         {
@@ -434,6 +587,72 @@ def calcular_geometria_techo(h_mayor, h_menor, ancho_portico):
     }
 
 
+def obtener_partidas_columnas_activas():
+    """
+    Devuelve la lista de partidas de columnas según el modo elegido:
+    - 'niveladas'
+    - 'desnivel_lados'
+    - 'individual_croquis' (agrupando automáticamente las columnas individuales que comparten perfil y altura)
+    """
+    cfg = st.session_state.config
+    modo = cfg["modo_columnas"]
+    lista_cols = []
+
+    if modo == "niveladas":
+        it = st.session_state.partidas["columnas_unico"]
+        if it["activo"]:
+            lista_cols.append({
+                "nombre": it["nombre"],
+                "tipo": it["tipo"],
+                "perfil": it["perfil"],
+                "cantidad_total": it["cantidad"],
+                "longitud_m": it["longitud_m"],
+                "largo_barra_m": obtener_largo_comercial_por_tipo(it["tipo"])
+            })
+    elif modo == "desnivel_lados":
+        for k in ["columnas_mayor", "columnas_menor"]:
+            it = st.session_state.partidas[k]
+            if it["activo"]:
+                lista_cols.append({
+                    "nombre": it["nombre"],
+                    "tipo": it["tipo"],
+                    "perfil": it["perfil"],
+                    "cantidad_total": it["cantidad"],
+                    "longitud_m": it["longitud_m"],
+                    "largo_barra_m": obtener_largo_comercial_por_tipo(it["tipo"])
+                })
+    elif modo == "individual_croquis":
+        letras, numeros = sincronizar_nodos_croquis()
+        nodos_activos = []
+        for num in numeros:
+            for letra in letras:
+                coord = f"{letra}-{num}"
+                nd = st.session_state.nodos_columnas.get(coord, {})
+                if nd.get("activo", False):
+                    nodos_activos.append({
+                        "coord": coord,
+                        "tipo": nd["tipo"],
+                        "perfil": nd["perfil"],
+                        "altura_m": round(float(nd["altura_m"]), 2)
+                    })
+        if nodos_activos:
+            df_n = pd.DataFrame(nodos_activos)
+            agrupado = df_n.groupby(["tipo", "perfil", "altura_m"], sort=False, as_index=False).agg(
+                cantidad=("coord", "count"),
+                ubicaciones=("coord", lambda x: ", ".join(x))
+            )
+            for _, row in agrupado.iterrows():
+                lista_cols.append({
+                    "nombre": f"Columnas [{row['ubicaciones']}]",
+                    "tipo": row["tipo"],
+                    "perfil": row["perfil"],
+                    "cantidad_total": int(row["cantidad"]),
+                    "longitud_m": float(row["altura_m"]),
+                    "largo_barra_m": obtener_largo_comercial_por_tipo(row["tipo"])
+                })
+    return lista_cols
+
+
 def mostrar_ficha_resumen_perfil(tipo_perfil, info_p, largo_barra_aplica, metraje_subtotal, nota_extra=""):
     if tipo_perfil == "Viga H (WF)":
         st.caption(
@@ -460,11 +679,10 @@ def mostrar_ficha_resumen_perfil(tipo_perfil, info_p, largo_barra_aplica, metraj
             st.warning(f"⚠️ {info_p['nota']}")
 
 
-# 4. Motor de Optimización Global por Perfil (Aprovechamiento de sobrantes entre elementos del mismo perfil)
+# 5. Motor de Optimización Global por Perfil (Aprovechamiento de sobrantes entre elementos del mismo perfil)
 def ejecutar_metrado_y_optimizacion_global(lista_items_activos, aprovechar_sobrantes=True):
     kerf_m = st.session_state.config["ancho_corte_mm"] / 1000.0
 
-    # A. Metrado individual por elemento estructural
     resumen_individual = []
     for item in lista_items_activos:
         p_info = MAPA_PERFILES[item["perfil"]]
@@ -495,7 +713,7 @@ def ejecutar_metrado_y_optimizacion_global(lista_items_activos, aprovechar_sobra
         piezas_totales = cant * (tramos_comp_unit + (1 if tramo_res > 0 else 0))
 
         resumen_individual.append({
-            "Elemento": item["nombre"],
+            "Elemento / Ubicación": item["nombre"],
             "Tipo": p_info["tipo"],
             "Perfil": item["perfil"],
             "Equiv. / Dim.": p_info["equiv_pulg"],
@@ -517,7 +735,6 @@ def ejecutar_metrado_y_optimizacion_global(lista_items_activos, aprovechar_sobra
 
     df_elementos = pd.DataFrame(resumen_individual)
 
-    # B. Agrupación por Perfil y Optimización de Cortes (compartiendo sobrantes del mismo perfil)
     perfiles_unicos = []
     for item in lista_items_activos:
         if item["perfil"] not in perfiles_unicos:
@@ -590,10 +807,8 @@ def ejecutar_metrado_y_optimizacion_global(lista_items_activos, aprovechar_sobra
                 ]
                 grupos_piezas.append(lista_pzas_elem)
 
-        # Empaquetado 1D (Best-Fit Decreasing)
         barras_cortadas = []
         if aprovechar_sobrantes:
-            # Unir todas las piezas del mismo perfil y ordenar de mayor a menor longitud
             todas_las_piezas = [p for grp in grupos_piezas for p in grp]
             piezas_ordenadas = sorted(todas_las_piezas, key=lambda x: x["largo"], reverse=True)
             for pza in piezas_ordenadas:
@@ -613,7 +828,6 @@ def ejecutar_metrado_y_optimizacion_global(lista_items_activos, aprovechar_sobra
                 else:
                     barras_cortadas.append({"piezas": [pza]})
         else:
-            # Empaquetar cada elemento por separado sin mezclar sobrantes
             for grp in grupos_piezas:
                 barras_elem = []
                 for pza in grp:
@@ -722,7 +936,7 @@ def ejecutar_metrado_y_optimizacion_global(lista_items_activos, aprovechar_sobra
     return df_elementos, df_consolidado, planes_por_perfil, df_todos_planes
 
 
-# 5. Bloque especializado para Columnas (con Desnivel y Cálculo de Pendiente / Ángulo de Techo)
+# 6. Apartado de Columnas con 3 Modos (Niveladas, Con Desnivel por Lados y Columnas Individuales con Croquis en Planta)
 def renderizar_apartado_columnas():
     cfg = st.session_state.config
     p_unico = st.session_state.partidas["columnas_unico"]
@@ -730,38 +944,35 @@ def renderizar_apartado_columnas():
     p_menor = st.session_state.partidas["columnas_menor"]
 
     with st.container(border=True):
-        st.markdown("#### 🏛️ Apartado de Columnas Principales y Pendiente del Techo")
-        st.caption("Define las columnas de soporte y elige si todas tienen la misma altura o si llevan desnivel para dar inclinación al techo.")
-
-        incluir_col = st.checkbox(
-            "Incluir Columnas en el proyecto",
-            value=(p_unico["activo"] or p_mayor["activo"]),
-            key="chk_incluir_columnas_general"
+        st.markdown("#### 🏛️ Apartado de Columnas Principales, Croquis de Ubicación y Pendiente")
+        st.caption(
+            "Elige cómo deseas configurar las columnas: todas iguales, por lados (Mayor/Menor) "
+            "o con **libertad total columna por columna mediante un Croquis en Planta (Vista Superior)**."
         )
 
-        if not incluir_col:
-            p_unico["activo"] = False
-            p_mayor["activo"] = False
-            p_menor["activo"] = False
-            return
+        mapa_modos = {
+            "niveladas": "1. Niveladas — Todas las columnas con el mismo perfil y altura",
+            "desnivel_lados": "2. Con desnivel por lados — Lado Mayor y Lado Menor (Inclinación uniforme)",
+            "individual_croquis": "3. 🎯 Columnas Individuales con Croquis en Planta (Libertad total en perfil y altura por eje)"
+        }
+        claves_modo = list(mapa_modos.keys())
+        idx_modo = claves_modo.index(cfg["modo_columnas"]) if cfg["modo_columnas"] in claves_modo else 2
 
-        opciones_desnivel = [
-            "No — Todas las columnas tienen la misma altura (Niveladas)",
-            "Sí — Columnas con desnivel (Techo inclinado: Lado Mayor y Lado Menor)"
-        ]
-        idx_des = 1 if cfg["columnas_con_desnivel"] else 0
-        seleccion_desnivel = st.radio(
-            "¿Necesitas desnivel en las columnas?",
-            options=opciones_desnivel,
-            index=idx_des,
-            horizontal=True,
-            key="radio_desnivel_col"
+        modo_elegido = st.radio(
+            "Modo de configuración de columnas:",
+            options=claves_modo,
+            format_func=lambda k: mapa_modos[k],
+            index=idx_modo,
+            key="radio_modo_columnas"
         )
-        cfg["columnas_con_desnivel"] = seleccion_desnivel.startswith("Sí")
+        cfg["modo_columnas"] = modo_elegido
 
         opciones_tipo = ["Tubo Cuadrado", "Tubo Rectangular", "Viga H (WF)", "Tubo Schedule (SCH)"]
 
-        if not cfg["columnas_con_desnivel"]:
+        # ----------------------------------------------------------------------
+        # MODO 1: NIVELADAS (TODAS IGUALES)
+        # ----------------------------------------------------------------------
+        if modo_elegido == "niveladas":
             p_unico["activo"] = True
             p_mayor["activo"] = False
             p_menor["activo"] = False
@@ -783,7 +994,10 @@ def renderizar_apartado_columnas():
             largo_b_u = obtener_largo_comercial_por_tipo(p_unico["tipo"])
             mostrar_ficha_resumen_perfil(p_unico["tipo"], info_u, largo_b_u, p_unico["cantidad"] * p_unico["longitud_m"])
 
-        else:
+        # ----------------------------------------------------------------------
+        # MODO 2: CON DESNIVEL POR LADOS (LADO MAYOR Y LADO MENOR)
+        # ----------------------------------------------------------------------
+        elif modo_elegido == "desnivel_lados":
             p_unico["activo"] = False
             p_mayor["activo"] = True
             p_menor["activo"] = True
@@ -841,7 +1055,7 @@ def renderizar_apartado_columnas():
             mostrar_ficha_resumen_perfil(p_menor["tipo"], info_men, largo_b_men, p_menor["cantidad"] * p_menor["longitud_m"])
 
             st.divider()
-            st.markdown("##### 📐 3. Cálculo Automático de Pendiente y Ángulo de Inclinación del Techo")
+            st.markdown("##### 📐 3. Cálculo Automático de Pendiente y Ángulo de Inclinación")
             col_luz, col_info_pend = st.columns([1.5, 3.5])
             with col_luz:
                 cfg["ancho_portico_m"] = st.number_input(
@@ -849,16 +1063,9 @@ def renderizar_apartado_columnas():
                     min_value=0.50,
                     value=float(cfg["ancho_portico_m"]),
                     step=0.50,
-                    format="%.2f",
-                    help="Distancia horizontal entre las columnas del Lado Mayor y las del Lado Menor."
+                    format="%.2f"
                 )
-
-            geo = calcular_geometria_techo(
-                p_mayor["longitud_m"],
-                p_menor["longitud_m"],
-                cfg["ancho_portico_m"]
-            )
-
+            geo = calcular_geometria_techo(p_mayor["longitud_m"], p_menor["longitud_m"], cfg["ancho_portico_m"])
             with col_info_pend:
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("Desnivel (Δh)", f"{geo['delta_h']:.2f} m")
@@ -866,16 +1073,192 @@ def renderizar_apartado_columnas():
                 m3.metric("Ángulo (θ)", f"{geo['angulo_deg']:.2f}°")
                 m4.metric("Largo Inclinado", f"{geo['long_inclinada']:.2f} m")
 
-            if p_mayor["longitud_m"] < p_menor["longitud_m"]:
-                st.warning("⚠️ Nota: La altura ingresada en el Lado Menor es mayor que la del Lado Mayor. Verifica el orden.")
-            else:
-                st.caption(
-                    f"💡 **Referencia geométrica:** Con una luz horizontal de **{cfg['ancho_portico_m']:.2f} m** y un desnivel de **{geo['delta_h']:.2f} m**, "
-                    f"la cubierta tiene una pendiente del **{geo['pendiente_pct']:.2f}%** (**{geo['angulo_deg']:.2f}°**) y el desarrollo inclinado (hipotenusa) mide **{geo['long_inclinada']:.2f} m**."
+        # ----------------------------------------------------------------------
+        # MODO 3: COLUMNAS INDIVIDUALES CON CROQUIS EN PLANTA ("VISTA SUPERIOR")
+        # ----------------------------------------------------------------------
+        elif modo_elegido == "individual_croquis":
+            p_unico["activo"] = False
+            p_mayor["activo"] = False
+            p_menor["activo"] = False
+
+            st.markdown("##### 🗺️ Configuración de Ejes y Cantidades del Croquis (Vista Superior)")
+            g1, g2, g3, g4 = st.columns([1.3, 1.3, 1.6, 1.3])
+            with g1:
+                cfg["grid_num_ejes_letras"] = st.number_input(
+                    "Cant. Ejes Transversales (Letras)",
+                    min_value=1,
+                    max_value=26,
+                    value=int(cfg["grid_num_ejes_letras"]),
+                    step=1,
+                    help="Número de ejes verticales (ej. 8 para H, G, F, E, D, C, B, A como en tu plano)."
+                )
+            with g2:
+                cfg["grid_num_ejes_numeros"] = st.number_input(
+                    "Cant. Ejes Longitudinales (Filas)",
+                    min_value=1,
+                    max_value=6,
+                    value=int(cfg["grid_num_ejes_numeros"]),
+                    step=1,
+                    help="Número de filas horizontales (ej. 2 para los ejes 2 y 1 de tu plano)."
+                )
+            with g3:
+                orden_str = st.selectbox(
+                    "Orden de Letras en Croquis",
+                    options=["H → A (Izquierda a Derecha, como plano CAD)", "A → H (Izquierda a Derecha)"],
+                    index=0 if cfg["grid_invertir_letras"] else 1
+                )
+                cfg["grid_invertir_letras"] = orden_str.startswith("H")
+            with g4:
+                cfg["ancho_portico_m"] = st.number_input(
+                    "Luz entre Filas / Ancho Pórtico (m)",
+                    min_value=0.50,
+                    value=float(cfg["ancho_portico_m"]),
+                    step=0.50,
+                    format="%.2f"
                 )
 
+            letras_ejes, numeros_ejes = sincronizar_nodos_croquis()
 
-# 6. Bloque interactivo para elementos estándar (Vigas, Correas, Bridas)
+            # Herramienta de asignación rápida por fila/eje (para no editar una por una si comparten base)
+            with st.expander("⚡ Asignación Rápida por Eje / Fila (Opcional — Aplica un perfil o altura a todo un eje y luego personaliza)", expanded=False):
+                b1, b2, b3, b4, b5 = st.columns([1.3, 1.4, 2.0, 1.1, 1.0])
+                opciones_destino = [f"Todo el Eje {num}" for num in numeros_ejes] + [f"Todo el Eje {let}" for let in letras_ejes] + ["Todas las columnas"]
+                with b1:
+                    destino_batch = st.selectbox("Aplicar a:", options=opciones_destino, key="batch_dest")
+                with b2:
+                    tipo_batch = st.selectbox("Familia:", options=opciones_tipo, key="batch_tipo")
+                with b3:
+                    perf_batch = st.selectbox("Perfil:", options=LISTAS_POR_TIPO[tipo_batch], key="batch_perf")
+                with b4:
+                    alt_batch = st.number_input("Altura (m):", min_value=0.10, value=5.00, step=0.20, format="%.2f", key="batch_alt")
+                with b5:
+                    st.write("")
+                    if st.button("Aplicar ahora", type="primary", use_container_width=True, key="btn_batch_apply"):
+                        for num in numeros_ejes:
+                            for let in letras_ejes:
+                                c_key = f"{let}-{num}"
+                                aplicar = (
+                                    destino_batch == "Todas las columnas"
+                                    or destino_batch == f"Todo el Eje {num}"
+                                    or destino_batch == f"Todo el Eje {let}"
+                                )
+                                if aplicar and c_key in st.session_state.nodos_columnas:
+                                    st.session_state.nodos_columnas[c_key]["tipo"] = tipo_batch
+                                    st.session_state.nodos_columnas[c_key]["perfil"] = perf_batch
+                                    st.session_state.nodos_columnas[c_key]["altura_m"] = float(alt_batch)
+                                    # Sincronizar widgets individuales si existen en session_state
+                                    st.session_state[f"nd_tipo_{c_key}"] = tipo_batch
+                                    st.session_state[f"nd_perf_{c_key}"] = perf_batch
+                                    st.session_state[f"nd_alt_{c_key}"] = float(alt_batch)
+                        st.rerun()
+
+            # Mostrar Croquis Técnico Interactivo en Planta ("VISTA SUPERIOR")
+            st.markdown("##### 📐 Croquis en Planta — Vista Superior (Actualización en Tiempo Real)")
+            svg_croquis = generar_svg_croquis_columnas(
+                letras_ejes,
+                numeros_ejes,
+                st.session_state.nodos_columnas,
+                cfg["ancho_portico_m"]
+            )
+            st.markdown(svg_croquis, unsafe_allow_html=True)
+            st.caption(
+                "Leyenda del croquis: **Símbolo `I`** = Viga H (WF) | **Símbolo `▭`** = Tubo Rectangular | "
+                "**Símbolo `□`** = Tubo Cuadrado | **Símbolo `○`** = Tubo Schedule (SCH)."
+            )
+
+            # Panel de Selección Individual Columna por Columna organizado por pestañas de Eje Longitudinal
+            st.markdown("##### 🎯 Selección Individual de Perfil y Altura para cada Columna")
+            tabs_filas = st.tabs([f"📍 Eje Longitudinal {num} ({len(letras_ejes)} posiciones)" for num in numeros_ejes])
+
+            for idx_f, num in enumerate(numeros_ejes):
+                with tabs_filas[idx_f]:
+                    for letra in letras_ejes:
+                        coord = f"{letra}-{num}"
+                        nodo = st.session_state.nodos_columnas[coord]
+                        ic1, ic2, ic3, ic4 = st.columns([1.1, 1.6, 2.3, 1.2])
+                        with ic1:
+                            nodo["activo"] = st.checkbox(
+                                f"Col. **{coord}**",
+                                value=nodo["activo"],
+                                key=f"nd_act_{coord}"
+                            )
+                        with ic2:
+                            idx_nt = opciones_tipo.index(nodo["tipo"]) if nodo["tipo"] in opciones_tipo else 0
+                            nodo["tipo"] = st.selectbox(
+                                f"Familia ({coord})",
+                                options=opciones_tipo,
+                                index=idx_nt,
+                                key=f"nd_tipo_{coord}",
+                                disabled=not nodo["activo"],
+                                label_visibility="collapsed"
+                            )
+                        with ic3:
+                            lista_np = LISTAS_POR_TIPO[nodo["tipo"]]
+                            idx_np = lista_np.index(nodo["perfil"]) if nodo["perfil"] in lista_np else 0
+                            nodo["perfil"] = st.selectbox(
+                                f"Perfil ({coord})",
+                                options=lista_np,
+                                index=idx_np,
+                                key=f"nd_perf_{coord}",
+                                disabled=not nodo["activo"],
+                                label_visibility="collapsed"
+                            )
+                        with ic4:
+                            nodo["altura_m"] = st.number_input(
+                                f"Altura m ({coord})",
+                                min_value=0.10,
+                                value=float(nodo["altura_m"]),
+                                step=0.10,
+                                format="%.2f",
+                                key=f"nd_alt_{coord}",
+                                disabled=not nodo["activo"],
+                                label_visibility="collapsed"
+                            )
+
+            # Tabla resumen de cantidades por ubicación y pendientes por cada eje transversal
+            partidas_ind = obtener_partidas_columnas_activas()
+            if partidas_ind:
+                col_res1, col_res2 = st.columns([2.5, 2.5])
+                with col_res1:
+                    st.markdown("###### 📋 Conteo Agrupado por Perfil y Altura")
+                    df_conteo_ind = pd.DataFrame([
+                        {
+                            "Ubicaciones en Croquis": p["nombre"].replace("Columnas ", ""),
+                            "Familia": p["tipo"],
+                            "Perfil": p["perfil"],
+                            "Altura c/u (m)": p["longitud_m"],
+                            "Cantidad": p["cantidad_total"],
+                            "Metraje Neto (m)": round(p["cantidad_total"] * p["longitud_m"], 2)
+                        }
+                        for p in partidas_ind
+                    ])
+                    st.dataframe(df_conteo_ind, use_container_width=True, hide_index=True)
+
+                with col_res2:
+                    if len(numeros_ejes) >= 2:
+                        st.markdown("###### 📐 Pendiente y Ángulo por cada Pórtico (Ejes Letra)")
+                        eje_sup = numeros_ejes[0]
+                        eje_inf = numeros_ejes[-1]
+                        filas_pend = []
+                        for letra in letras_ejes:
+                            n_sup = st.session_state.nodos_columnas.get(f"{letra}-{eje_sup}", {})
+                            n_inf = st.session_state.nodos_columnas.get(f"{letra}-{eje_inf}", {})
+                            if n_sup.get("activo") and n_inf.get("activo"):
+                                g_p = calcular_geometria_techo(n_sup["altura_m"], n_inf["altura_m"], cfg["ancho_portico_m"])
+                                filas_pend.append({
+                                    "Pórtico": f"Eje {letra} ({letra}-{eje_sup} a {letra}-{eje_inf})",
+                                    f"H ({letra}-{eje_sup})": f"{n_sup['altura_m']:.2f} m",
+                                    f"H ({letra}-{eje_inf})": f"{n_inf['altura_m']:.2f} m",
+                                    "Δh (m)": round(g_p["delta_h"], 2),
+                                    "Pendiente (%)": f"{g_p['pendiente_pct']:.2f}%",
+                                    "Ángulo (°)": f"{g_p['angulo_deg']:.2f}°",
+                                    "L. Inclinada (m)": round(g_p["long_inclinada"], 2)
+                                })
+                        if filas_pend:
+                            st.dataframe(pd.DataFrame(filas_pend), use_container_width=True, hide_index=True)
+
+
+# 7. Bloque interactivo para elementos estándar (Vigas, Correas, Bridas)
 def renderizar_bloque_elemento(clave, titulo, descripcion, es_tijeral=False, num_tijerales=1):
     datos = st.session_state.partidas[clave]
     with st.container(border=True):
@@ -937,18 +1320,18 @@ def renderizar_bloque_elemento(clave, titulo, descripcion, es_tijeral=False, num
             mostrar_ficha_resumen_perfil(datos["tipo"], info_p, largo_barra_aplica, metraje_subtotal, nota_extra)
 
 
-# 7. Gestor dinámico de Montantes y Diagonales en el Paso 3
+# 8. Gestor dinámico de Montantes y Diagonales en el Paso 3
 def renderizar_gestor_montantes_dinamicos(num_tijerales):
     st.markdown("#### ⏸️ Tijeral — Montantes y Diagonales (Medidas Específicas)")
     st.caption(
-        "Dado que en un tijeral inclinado los montantes y diagonales tienen distintas alturas, aquí puedes detallar cada medida por separado. "
-        "**Recuerda:** si usas el mismo perfil que en las bridas o entre distintos montantes, el sistema aprovechará automáticamente los sobrantes de barra."
+        "Añade tantos tipos o alturas de montantes como tenga tu tijeral. "
+        "**Recuerda:** si usas el mismo perfil que en las bridas o columnas, el sistema aprovechará automáticamente los sobrantes de barra."
     )
 
     opciones_tipo = ["Tubo Cuadrado", "Tubo Rectangular", "Viga H (WF)", "Tubo Schedule (SCH)"]
     id_a_eliminar = None
 
-    for idx, m_item in enumerate(st.session_state.lista_montantes):
+    for m_item in st.session_state.lista_montantes:
         mid = m_item["id"]
         with st.container(border=True):
             top_c1, top_c2, top_c3 = st.columns([1, 4, 1])
@@ -956,7 +1339,7 @@ def renderizar_gestor_montantes_dinamicos(num_tijerales):
                 m_item["activo"] = st.checkbox("Incluir", value=m_item["activo"], key=f"chk_mont_{mid}")
             with top_c2:
                 m_item["nombre"] = st.text_input(
-                    "Identificador / Nombre del Montante o Diagonal",
+                    "Identificador del Montante o Diagonal",
                     value=m_item["nombre"],
                     key=f"nom_mont_{mid}",
                     label_visibility="collapsed"
@@ -1039,7 +1422,7 @@ def renderizar_gestor_montantes_dinamicos(num_tijerales):
         st.rerun()
 
 
-# 8. Barra Lateral: Navegación por pasos y resumen normativo
+# 9. Barra Lateral: Navegación por pasos y resumen normativo
 with st.sidebar:
     st.header("🧭 Pasos del Asistente")
     paso_actual = st.session_state.paso
@@ -1047,7 +1430,7 @@ with st.sidebar:
     if st.button("1️⃣ Parámetros Generales", use_container_width=True, type="primary" if paso_actual == 1 else "secondary"):
         ir_a_paso(1)
         st.rerun()
-    if st.button("2️⃣ Columnas, Pendiente y Correas", use_container_width=True, type="primary" if paso_actual == 2 else "secondary"):
+    if st.button("2️⃣ Columnas (Croquis), Pendiente y Correas", use_container_width=True, type="primary" if paso_actual == 2 else "secondary"):
         ir_a_paso(2)
         st.rerun()
     if st.button("3️⃣ Tijeral (Bridas y Montantes)", use_container_width=True, type="primary" if paso_actual == 3 else "secondary"):
@@ -1061,26 +1444,22 @@ with st.sidebar:
     st.markdown("##### 📋 Normas Integradas (332 Perfiles)")
     st.caption(
         "**1. Tubos Estructurales (Cuadrados y Rect.):**\n"
-        "• ASTM A500 / AISI A500 Grado A (LAC - ERW)\n"
-        "• Fluencia mín.: 269 MPa | Tracción: 310 MPa\n\n"
+        "• ASTM A500 / AISI A500 Grado A (LAC - ERW)\n\n"
         "**2. Vigas H Alas Anchas (WF):**\n"
-        "• ASTM A36 (≥ 250 MPa) / A572 Gr. 50 / A992 (≥ 345 MPa)\n"
-        "• Presentación: 20, 30 y 40 pies\n\n"
+        "• ASTM A36 / A572 Gr. 50 / A992 (20, 30 y 40 pies)\n\n"
         "**3. Tubos Schedule (SCH 40 / SCH 80) Sin Costura:**\n"
-        "• Trinorma: ASTM A53 / A106 / API 5L PSL 1 Gr. B\n"
-        "• Fluencia mín.: 35 ksi (240-241 MPa)\n"
-        "• Tracción mín.: 60 ksi (413-415 MPa)"
+        "• Trinorma: ASTM A53 / A106 / API 5L PSL 1 Gr. B"
     )
 
 
-# 9. Encabezado y Barra de Progreso
+# 10. Encabezado y Barra de Progreso
 st.title("🏗️ Calculadora Estructural: ASTM A500, Vigas H (WF) y Tubos Schedule (SCH)")
 
 titulos_pasos = {
     1: "Paso 1 de 4: Configuración General y Longitudes Comerciales",
-    2: "Paso 2 de 4: Columnas (con Desnivel y Cálculo de Pendiente), Vigas y Correas",
+    2: "Paso 2 de 4: Columnas (con Croquis en Planta Individual), Pendiente, Vigas y Correas",
     3: "Paso 3 de 4: Diseño del Tijeral (Brida Superior, Brida Inferior y Múltiples Montantes)",
-    4: "Paso 4 de 4: Panorama Completo con Aprovechamiento Global de Sobrantes por Perfil"
+    4: "Paso 4 de 4: Panorama Completo con Croquis y Aprovechamiento Global de Sobrantes"
 }
 st.progress(st.session_state.paso / 4.0, text=titulos_pasos[st.session_state.paso])
 st.divider()
@@ -1106,8 +1485,7 @@ if st.session_state.paso == 1:
                 min_value=1.00,
                 value=float(st.session_state.config["largo_tubos_m"]),
                 step=0.50,
-                format="%.2f",
-                help="Longitud comercial estándar de tubos cuadrados y rectangulares: 6.00 m."
+                format="%.2f"
             )
 
             st.session_state.config["ancho_corte_mm"] = st.number_input(
@@ -1115,8 +1493,7 @@ if st.session_state.paso == 1:
                 min_value=0.0,
                 value=float(st.session_state.config["ancho_corte_mm"]),
                 step=0.5,
-                format="%.1f",
-                help="Usa 0 mm para cálculo nominal o ingresa el espesor del disco/oxicorte."
+                format="%.1f"
             )
 
         with col2:
@@ -1191,8 +1568,7 @@ if st.session_state.paso == 1:
 
             st.session_state.config["optimizar_sobrantes_mismo_perfil"] = st.checkbox(
                 "♻️ Aprovechar sobrantes entre elementos del mismo perfil",
-                value=st.session_state.config["optimizar_sobrantes_mismo_perfil"],
-                help="Si las bridas y los montantes (u otros elementos) usan el mismo perfil, reutiliza los retazos sobrantes de uno para cortar el otro."
+                value=st.session_state.config["optimizar_sobrantes_mismo_perfil"]
             )
 
     st.write("")
@@ -1204,11 +1580,10 @@ if st.session_state.paso == 1:
 
 
 # ==============================================================================
-# PASO 2: COLUMNAS (CON DESNIVEL Y PENDIENTE), VIGAS Y CORREAS
+# PASO 2: COLUMNAS (CROQUIS EN PLANTA / DESNIVEL), VIGAS Y CORREAS
 # ==============================================================================
 elif st.session_state.paso == 2:
-    st.subheader("2️⃣ Selección de Perfiles para Columnas, Pendiente de Techo, Vigas y Correas")
-    st.markdown("Configura las columnas (con o sin desnivel), verifica el ángulo e inclinación del techo y selecciona las correas.")
+    st.subheader("2️⃣ Selección de Columnas (con Croquis en Planta), Pendiente, Vigas y Correas")
 
     renderizar_apartado_columnas()
 
@@ -1245,25 +1620,36 @@ elif st.session_state.paso == 3:
     cfg = st.session_state.config
     st.subheader("3️⃣ Selección de Perfiles para el Tijeral (Bridas y Montantes Específicos)")
 
-    # Mostrar panel de geometría calculada si hay desnivel activo en columnas
-    if cfg["columnas_con_desnivel"] and st.session_state.partidas["columnas_mayor"]["activo"]:
-        geo = calcular_geometria_techo(
+    # Obtener referencia de pendiente desde el modo de columnas activo
+    geo_ref = None
+    if cfg["modo_columnas"] == "desnivel_lados" and st.session_state.partidas["columnas_mayor"]["activo"]:
+        geo_ref = calcular_geometria_techo(
             st.session_state.partidas["columnas_mayor"]["longitud_m"],
             st.session_state.partidas["columnas_menor"]["longitud_m"],
             cfg["ancho_portico_m"]
         )
+    elif cfg["modo_columnas"] == "individual_croquis":
+        letras_e, numeros_e = sincronizar_nodos_croquis()
+        if len(numeros_e) >= 2 and letras_e:
+            l0 = letras_e[0]
+            n_sup = st.session_state.nodos_columnas.get(f"{l0}-{numeros_e[0]}", {})
+            n_inf = st.session_state.nodos_columnas.get(f"{l0}-{numeros_e[-1]}", {})
+            if n_sup.get("activo") and n_inf.get("activo"):
+                geo_ref = calcular_geometria_techo(n_sup["altura_m"], n_inf["altura_m"], cfg["ancho_portico_m"])
+
+    if geo_ref is not None:
         with st.container(border=True):
             col_g1, col_g2 = st.columns([3.2, 1.8])
             with col_g1:
                 st.markdown(
-                    f"📐 **Geometría del Techo (calculada desde Columnas):** "
-                    f"Luz = `{cfg['ancho_portico_m']:.2f} m` | Desnivel Δh = `{geo['delta_h']:.2f} m` | "
-                    f"**Pendiente = `{geo['pendiente_pct']:.2f}%` (`{geo['angulo_deg']:.2f}°`)** | "
-                    f"**Longitud Inclinada = `{geo['long_inclinada']:.2f} m`**"
+                    f"📐 **Geometría de Pórtico Calculada:** "
+                    f"Luz = `{cfg['ancho_portico_m']:.2f} m` | Desnivel Δh = `{geo_ref['delta_h']:.2f} m` | "
+                    f"**Pendiente = `{geo_ref['pendiente_pct']:.2f}%` (`{geo_ref['angulo_deg']:.2f}°`)** | "
+                    f"**Longitud Inclinada = `{geo_ref['long_inclinada']:.2f} m`**"
                 )
             with col_g2:
-                if st.button(f"📏 Usar {geo['long_inclinada']:.2f} m en Brida Superior", use_container_width=True):
-                    st.session_state.partidas["brida_sup"]["longitud_m"] = round(geo["long_inclinada"], 2)
+                if st.button(f"📏 Usar {geo_ref['long_inclinada']:.2f} m en Brida Superior", use_container_width=True):
+                    st.session_state.partidas["brida_sup"]["longitud_m"] = round(geo_ref["long_inclinada"], 2)
                     st.session_state.partidas["brida_inf"]["longitud_m"] = round(cfg["ancho_portico_m"], 2)
                     st.rerun()
 
@@ -1315,7 +1701,7 @@ elif st.session_state.paso == 3:
 
 
 # ==============================================================================
-# PASO 4: PANORAMA COMPLETO CON APROVECHAMIENTO GLOBAL DE SOBRANTES POR PERFIL
+# PASO 4: PANORAMA COMPLETO CON CROQUIS Y APROVECHAMIENTO GLOBAL DE SOBRANTES
 # ==============================================================================
 elif st.session_state.paso == 4:
     cfg = st.session_state.config
@@ -1332,35 +1718,15 @@ elif st.session_state.paso == 4:
         )
     with col_opt2:
         cfg["optimizar_sobrantes_mismo_perfil"] = st.checkbox(
-            "♻️ Aprovechar sobrantes entre elementos del mismo perfil (Bridas + Montantes + Columnas)",
+            "♻️ Aprovechar sobrantes entre elementos del mismo perfil (Columnas + Bridas + Montantes)",
             value=cfg["optimizar_sobrantes_mismo_perfil"]
         )
 
-    if cfg["columnas_con_desnivel"] and st.session_state.partidas["columnas_mayor"]["activo"]:
-        geo = calcular_geometria_techo(
-            st.session_state.partidas["columnas_mayor"]["longitud_m"],
-            st.session_state.partidas["columnas_menor"]["longitud_m"],
-            cfg["ancho_portico_m"]
-        )
-        st.info(
-            f"📐 **Geometría de Inclinación del Techo:** "
-            f"Altura Mayor = `{st.session_state.partidas['columnas_mayor']['longitud_m']:.2f} m` | "
-            f"Altura Menor = `{st.session_state.partidas['columnas_menor']['longitud_m']:.2f} m` | "
-            f"Luz Pórtico = `{cfg['ancho_portico_m']:.2f} m` ➡️ "
-            f"**Desnivel Δh = `{geo['delta_h']:.2f} m`** | "
-            f"**Pendiente = `{geo['pendiente_pct']:.2f}%`** | "
-            f"**Ángulo θ = `{geo['angulo_deg']:.2f}°`** | "
-            f"**Largo Inclinado = `{geo['long_inclinada']:.2f} m`**"
-        )
-
-    # Construir lista unificada de elementos activos (Partidas fijas + Lista dinámica de Montantes)
+    # Construir lista unificada de elementos activos
     lista_items_activos = []
-    orden_claves_fijas = [
-        "columnas_unico", "columnas_mayor", "columnas_menor",
-        "vigas_portico", "correas", "brida_sup", "brida_inf"
-    ]
+    lista_items_activos.extend(obtener_partidas_columnas_activas())
 
-    for clave in orden_claves_fijas:
+    for clave in ["vigas_portico", "correas", "brida_sup", "brida_inf"]:
         it = st.session_state.partidas[clave]
         if it["activo"]:
             cant_final = it["cantidad"] * cfg["num_tijerales"] if it["es_tijeral"] else it["cantidad"]
@@ -1414,25 +1780,35 @@ elif st.session_state.paso == 4:
 
         if barras_ahorradas > 0:
             st.success(
-                f"♻️ **¡Aprovechamiento de retazos activo!** Al reutilizar los tramos sobrantes entre elementos que comparten el mismo perfil "
-                f"(por ejemplo, entre Bridas y Montantes), redujiste la compra de **{total_barras_aislado} barras** a **{total_barras_comprar} barras** "
+                f"♻️ **¡Aprovechamiento de retazos activo!** Al reutilizar los tramos sobrantes entre elementos que comparten el mismo perfil, "
+                f"redujiste la compra de **{total_barras_aislado} barras** a **{total_barras_comprar} barras** "
                 f"(un ahorro directo de **{barras_ahorradas} barra(s) comercial(es)**)."
             )
+
+        if cfg["modo_columnas"] == "individual_croquis":
+            with st.expander("🗺️ Ver Croquis en Planta de Ubicación de Columnas (Vista Superior)", expanded=True):
+                letras_e, numeros_e = sincronizar_nodos_croquis()
+                st.markdown(
+                    generar_svg_croquis_columnas(
+                        letras_e,
+                        numeros_e,
+                        st.session_state.nodos_columnas,
+                        cfg["ancho_portico_m"]
+                    ),
+                    unsafe_allow_html=True
+                )
 
         st.divider()
 
         tab_consolidado, tab_cortes, tab_elementos, tab_catalogo = st.tabs([
             "🛒 1. Orden de Compra Consolidada (Optimizada)",
             "🪚 2. Plan de Corte Combinado por Perfil",
-            "📐 3. Metrado Detallado por Elemento",
+            "📐 3. Metrado Detallado por Elemento y Ubicación",
             "📒 4. Catálogo Técnico (332 Perfiles)"
         ])
 
         with tab_consolidado:
             st.markdown("#### 🛒 Lista de Compra Optimizada por Tipo de Perfil")
-            st.caption(
-                "Muestra cuántas barras comerciales necesitas comprar de cada perfil tras aprovechar los retazos entre todos los elementos que lo comparten."
-            )
             st.dataframe(df_consolidado, use_container_width=True, hide_index=True)
 
             csv_compra = df_consolidado.to_csv(index=False).encode("utf-8-sig")
@@ -1445,16 +1821,13 @@ elif st.session_state.paso == 4:
 
         with tab_cortes:
             st.markdown("#### 🪚 Plan de Corte en Taller Agrupado por Perfil (Con Reutilización de Sobrantes)")
-            st.caption(
-                "Cada tabla muestra cómo cortar las barras de un perfil específico, indicando exactamente qué piezas (Bridas, Montantes, Correas, etc.) salen de cada barra."
-            )
             for perf_key, datos_plan in planes_por_perfil.items():
                 etiqueta_ahorro = f" | ♻️ Ahorro: {datos_plan['ahorro_barras']} barra(s)" if datos_plan["ahorro_barras"] > 0 else ""
                 with st.expander(
                     f"📌 Perfil: {perf_key} — Comprar: {datos_plan['total_barras']} barra(s) de {datos_plan['largo_barra']:.2f} m{etiqueta_ahorro}",
                     expanded=True
                 ):
-                    st.markdown(f"**Elementos que abastece este perfil:** `{', '.join(datos_plan['elementos'])}`")
+                    st.markdown(f"**Elementos / Ubicaciones que abastece este perfil:** `{', '.join(datos_plan['elementos'])}`")
                     if datos_plan["barras_combinadas"] > 0:
                         st.info(
                             f"🔥 Se generaron **{datos_plan['barras_combinadas']} barra(s) de corte combinado** donde los sobrantes de los tramos largos "
@@ -1471,8 +1844,7 @@ elif st.session_state.paso == 4:
             )
 
         with tab_elementos:
-            st.markdown("#### 📐 Desglose de Metrado por Elemento Estructural")
-            st.caption("Detalle de cantidades, longitudes, tramos completos, piezas a cortar, pesos y áreas netas por cada partida.")
+            st.markdown("#### 📐 Desglose de Metrado por Elemento Estructural y Ubicación en Croquis")
             st.dataframe(df_elementos, use_container_width=True, hide_index=True)
 
             csv_elem = df_elementos.to_csv(index=False).encode("utf-8-sig")
